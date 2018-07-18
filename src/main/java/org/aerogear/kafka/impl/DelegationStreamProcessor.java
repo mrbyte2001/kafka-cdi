@@ -44,7 +44,7 @@ public class DelegationStreamProcessor {
     private AnnotatedMethod annotatedProcessorMethod;
     private KafkaStreams streams;
 
-    public void init(final String bootstrapServers, final AnnotatedMethod annotatedMethod, final BeanManager beanManager) {
+    public void init(final AnnotatedMethod annotatedMethod, final BeanManager beanManager) {
 
         this.annotatedProcessorMethod = annotatedMethod;
         final KafkaStream streamAnnotation = annotatedMethod.getAnnotation(KafkaStream.class);
@@ -52,7 +52,7 @@ public class DelegationStreamProcessor {
         final Class<?> valType = (Class<?>) ((ParameterizedType) annotatedProcessorMethod.getJavaMember().getGenericParameterTypes()[0]).getActualTypeArguments()[1];
 
         properties.put(StreamsConfig.APPLICATION_ID_CONFIG, "org-aerogear-kafka-cdi-" + UUID.randomUUID().toString());
-        properties.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
+        properties.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, "127.0.0.1:9092");
         properties.put(StreamsConfig.DEFAULT_KEY_SERDE_CLASS_CONFIG, CafdiSerdes.serdeFrom(keyType).getClass());
         properties.put(StreamsConfig.DEFAULT_VALUE_SERDE_CLASS_CONFIG, CafdiSerdes.serdeFrom(valType).getClass());
         properties.put(StreamsConfig.COMMIT_INTERVAL_MS_CONFIG, streamAnnotation.commitInterval());

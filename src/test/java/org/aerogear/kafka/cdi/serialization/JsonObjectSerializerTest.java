@@ -15,7 +15,6 @@
  */
 package org.aerogear.kafka.cdi.serialization;
 
-import com.google.common.base.Objects;
 import org.aerogear.kafka.serialization.JsonObjectSerializer;
 import org.apache.kafka.common.serialization.Serializer;
 import org.junit.Before;
@@ -26,6 +25,7 @@ import javax.json.JsonObject;
 import javax.json.JsonReader;
 import java.io.ByteArrayInputStream;
 import java.util.Collections;
+import java.util.Objects;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
@@ -81,8 +81,8 @@ public class JsonObjectSerializerTest {
             if (getClass() != obj.getClass()) return false;
 
             final User other = (User) obj;
-            return Objects.equal(this.username, other.username)
-                    && Objects.equal(this.age, other.age);
+            return Objects.equals(this.username, other.username)
+                    && Objects.equals(this.age, other.age);
 
         }
 

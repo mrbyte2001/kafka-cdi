@@ -16,38 +16,34 @@
 package org.aerogear.kafka.cdi.extension;
 
 import org.aerogear.kafka.ExtendedKafkaProducer;
+import org.aerogear.kafka.SimpleKafkaProducer;
 import org.aerogear.kafka.cdi.annotation.Consumer;
 import org.aerogear.kafka.cdi.annotation.KafkaConfig;
+import org.aerogear.kafka.cdi.annotation.KafkaStream;
 import org.aerogear.kafka.impl.DelegationKafkaConsumer;
 import org.aerogear.kafka.impl.DelegationStreamProcessor;
 import org.aerogear.kafka.impl.InjectedKafkaProducer;
 import org.aerogear.kafka.serialization.CafdiSerdes;
-import org.aerogear.kafka.SimpleKafkaProducer;
-import org.aerogear.kafka.cdi.annotation.KafkaStream;
-import org.aerogear.kafka.cdi.annotation.Producer;
 import org.apache.kafka.common.serialization.Serde;
 import org.apache.kafka.common.serialization.Serializer;
+import org.eclipse.microprofile.config.Config;
+import org.eclipse.microprofile.config.ConfigProvider;
+import org.eclipse.microprofile.config.spi.ConfigSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.enterprise.context.spi.CreationalContext;
 import javax.enterprise.event.Observes;
-import javax.enterprise.inject.spi.AfterDeploymentValidation;
-import javax.enterprise.inject.spi.AnnotatedMethod;
-import javax.enterprise.inject.spi.AnnotatedType;
-import javax.enterprise.inject.spi.Bean;
-import javax.enterprise.inject.spi.BeanManager;
-import javax.enterprise.inject.spi.BeforeShutdown;
-import javax.enterprise.inject.spi.Extension;
-import javax.enterprise.inject.spi.InjectionPoint;
-import javax.enterprise.inject.spi.InjectionTarget;
-import javax.enterprise.inject.spi.ProcessAnnotatedType;
-import javax.enterprise.inject.spi.ProcessInjectionTarget;
-import javax.enterprise.inject.spi.WithAnnotations;
+import javax.enterprise.inject.spi.*;
 import javax.naming.InitialContext;
 import javax.naming.NamingException;
+import java.lang.reflect.Field;
 import java.lang.reflect.ParameterizedType;
-import java.util.Arrays;
+import java.lang.reflect.Type;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -55,33 +51,30 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingDeque;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
+import java.util.stream.StreamSupport;
 
+import static java.util.Arrays.asList;
 import static java.util.Collections.newSetFromMap;
-import static org.apache.kafka.clients.CommonClientConfigs.BOOTSTRAP_SERVERS_CONFIG;
 import static org.apache.kafka.clients.producer.ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG;
 import static org.apache.kafka.clients.producer.ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG;
 
 public class KafkaExtension<X> implements Extension {
 
-    private String bootstrapServers = null;
     private final Set<AnnotatedMethod<?>> listenerMethods = newSetFromMap(new ConcurrentHashMap<>());
     private final Set<AnnotatedMethod<?>> streamProcessorMethods = newSetFromMap(new ConcurrentHashMap<>());
     private final Set<DelegationKafkaConsumer> managedConsumers = newSetFromMap(new ConcurrentHashMap<>());
     private final Set<org.apache.kafka.clients.producer.Producer> managedProducers = newSetFromMap(new ConcurrentHashMap<>());
     private final Logger logger = LoggerFactory.getLogger(KafkaExtension.class);
+    private List<KafkaBean> beans = new ArrayList<>();
 
+    public void createConfigBuilder(@Observes BeforeBeanDiscovery beforeBeanDiscovery){
 
-    public void kafkaConfig(@Observes @WithAnnotations(KafkaConfig.class) ProcessAnnotatedType<X> pat) {
-        logger.trace("Kafka config scanning type: " + pat.getAnnotatedType().getJavaClass().getName());
+    }
 
-        final AnnotatedType<X> annotatedType = pat.getAnnotatedType();
-        final KafkaConfig kafkaConfig = annotatedType.getAnnotation(KafkaConfig.class);
+    public void collectConfiguration(@Observes @WithAnnotations({KafkaConfig.class}) ProcessAnnotatedType<X> pat) {
+        final List<Field> fields = asList(pat.getAnnotatedType().getJavaClass().getDeclaredFields());
 
-        // we just do the first
-        if (kafkaConfig != null && bootstrapServers == null) {
-            logger.info("setting bootstrap.servers IP for, {}", kafkaConfig.bootstrapServers());
-            bootstrapServers = VerySimpleEnvironmentResolver.simpleBootstrapServerResolver(kafkaConfig.bootstrapServers());
-        }
     }
 
     public void registerListeners(@Observes @WithAnnotations({Consumer.class, KafkaStream.class}) ProcessAnnotatedType<X> pat) {
@@ -107,11 +100,85 @@ public class KafkaExtension<X> implements Extension {
         }
     }
 
+    public void simple(@Observes ProcessInjectionPoint<X,SimpleKafkaProducer> pat, BeanManager beanManager) {
+        final InjectionPoint injectionPoint = pat.getInjectionPoint();
+        Config config = ConfigProvider.getConfig();
+        final KafkaConfig kafkaConfig = injectionPoint.getAnnotated().getAnnotation(KafkaConfig.class);
+
+        final Serde<?> keySerde = CafdiSerdes.serdeFrom((Class<?>)  ((ParameterizedType)injectionPoint.getType()).getActualTypeArguments()[0]);
+        final Serde<?> valSerde = CafdiSerdes.serdeFrom((Class<?>)  ((ParameterizedType)injectionPoint.getType()).getActualTypeArguments()[1]);
+
+        Properties properties = configurationProperties(config, kafkaConfig);
+
+        final String namespace = kafkaConfig != null ? kafkaConfig.value() : "";
+
+        final InjectedKafkaProducer injectionProducer = createInjectionProducer(namespace, properties, config, keySerde.serializer().getClass(),
+                valSerde.serializer().getClass(),
+                keySerde.serializer(),
+                valSerde.serializer());
+
+        final Set<Type> beanTypes = Collections.singleton(injectionPoint.getType());
+
+        final KafkaBean<SimpleKafkaProducer> kafkaBean = new KafkaBean<>(
+                injectionProducer.getClass(),
+                beanTypes,
+                pat.getInjectionPoint().getQualifiers(), injectionProducer);
+
+        beans.add(kafkaBean);
+    }
+
+    private Properties configurationProperties(final Config config, final KafkaConfig kafkaConfig) {
+        final String configurationName = kafkaConfig != null ? kafkaConfig.value() : "";
+
+        Properties properties = new Properties();
+
+        StreamSupport.stream(config.getConfigSources().spliterator(), false)
+                .filter(configSource -> configSource.getName().equals("DEFAULT"))
+                .findFirst()
+                .map(ConfigSource::getProperties)
+                .ifPresent(properties::putAll);
+
+        if (isNotEmpty(configurationName)) {
+            StreamSupport.stream(config.getConfigSources().spliterator(), false)
+                    .filter(configSource -> configSource.getName().equals(configurationName))
+                    .findFirst()
+                    .map(ConfigSource::getProperties)
+                    .ifPresent(properties::putAll);
+        }
+
+        return properties;
+    }
+
+    public void extended(@Observes ProcessInjectionPoint<X,ExtendedKafkaProducer> pat, BeanManager beanManager) {
+        final InjectionPoint injectionPoint = pat.getInjectionPoint();
+        Config config = ConfigProvider.getConfig();
+        final KafkaConfig kafkaConfig = injectionPoint.getAnnotated().getAnnotation(KafkaConfig.class);
+
+        final Serde<?> keySerde = CafdiSerdes.serdeFrom((Class<?>)  ((ParameterizedType)injectionPoint.getType()).getActualTypeArguments()[0]);
+        final Serde<?> valSerde = CafdiSerdes.serdeFrom((Class<?>)  ((ParameterizedType)injectionPoint.getType()).getActualTypeArguments()[1]);
+
+        Properties properties = configurationProperties(config, kafkaConfig);
+
+        final InjectedKafkaProducer injectionProducer = createInjectionProducer(kafkaConfig.value(), properties, config, keySerde.serializer().getClass(),
+                valSerde.serializer().getClass(),
+                keySerde.serializer(),
+                valSerde.serializer());
+
+        final Set<Type> beanTypes = Collections.singleton(injectionPoint.getType());
+
+        final KafkaBean<ExtendedKafkaProducer> kafkaBean = new KafkaBean<>(
+                injectionProducer.getClass(),
+                beanTypes,
+                pat.getInjectionPoint().getQualifiers(), injectionProducer);
+
+        beans.add(kafkaBean);
+    }
+
     public void afterDeploymentValidation(@Observes AfterDeploymentValidation adv, final BeanManager bm) {
 
 //        final BeanManager bm = CDI.current().getBeanManager();
 
-        logger.debug("wiring annotated methods to internal Kafka Util clazzes");
+        logger.trace("wiring annotated methods to internal Kafka Util clazzes");
 
         listenerMethods.forEach( consumerMethod -> {
 
@@ -120,7 +187,7 @@ public class KafkaExtension<X> implements Extension {
             final DelegationKafkaConsumer frameworkConsumer = (DelegationKafkaConsumer) bm.getReference(bean, DelegationKafkaConsumer.class, ctx);
 
             // hooking it all together
-            frameworkConsumer.initialize(bootstrapServers, consumerMethod, bm);
+            frameworkConsumer.initialize(consumerMethod, bm);
 
             managedConsumers.add(frameworkConsumer);
             submitToExecutor(frameworkConsumer);
@@ -132,14 +199,9 @@ public class KafkaExtension<X> implements Extension {
             final CreationalContext<DelegationStreamProcessor> ctx = bm.createCreationalContext(bean);
             final DelegationStreamProcessor frameworkProcessor = (DelegationStreamProcessor) bm.getReference(bean, DelegationStreamProcessor.class, ctx);
 
-            frameworkProcessor.init(bootstrapServers, annotatedStreamMethod, bm);
+            // TODO: Add Configuration
+            frameworkProcessor.init(annotatedStreamMethod, bm);
         });
-
-
-
-
-
-
 
     }
 
@@ -149,77 +211,13 @@ public class KafkaExtension<X> implements Extension {
         managedProducers.forEach(org.apache.kafka.clients.producer.Producer::close);
     }
 
-    public <X> void processInjectionTarget(@Observes ProcessInjectionTarget<X> pit) {
+    public void registerBeans(@Observes AfterBeanDiscovery abd) {
+        logger.trace("Register beans.");
+        beans.forEach(abd::addBean);
+    }
 
-        final InjectionTarget<X> it = pit.getInjectionTarget();
-        final AnnotatedType<X> at = pit.getAnnotatedType();
-
-        final InjectionTarget<X> wrapped = new InjectionTarget<X>() {
-            @Override
-            public void inject(X instance, CreationalContext<X> ctx) {
-                it.inject(instance, ctx);
-
-                Arrays.asList(at.getJavaClass().getDeclaredFields()).forEach(field -> {
-                    final Producer annotation = field.getAnnotation(Producer.class);
-
-                    if (annotation != null) {
-
-                        if (field.getType().isAssignableFrom(SimpleKafkaProducer.class) || field.getType().isAssignableFrom(ExtendedKafkaProducer.class)) {
-                            field.setAccessible(Boolean.TRUE);
-
-                            final Serde<?> keySerde = CafdiSerdes.serdeFrom((Class<?>)  ((ParameterizedType)field.getGenericType()).getActualTypeArguments()[0]);
-                            final Serde<?> valSerde = CafdiSerdes.serdeFrom((Class<?>)  ((ParameterizedType)field.getGenericType()).getActualTypeArguments()[1]);
-
-                            final org.apache.kafka.clients.producer.Producer p = createInjectionProducer(
-                                    bootstrapServers,
-                                    keySerde.serializer().getClass(),
-                                    valSerde.serializer().getClass(),
-                                    keySerde.serializer(),
-                                    valSerde.serializer()
-                            );
-
-                            managedProducers.add(p);
-
-                            try {
-                                field.set(instance, p);
-                            } catch (IllegalArgumentException
-                                    | IllegalAccessException e) {
-                                logger.error("could not inject producer", e);
-                                e.printStackTrace();
-                            }
-                        }
-                    }
-                });
-            }
-
-            @Override
-            public void postConstruct(X instance) {
-                it.postConstruct(instance);
-            }
-
-            @Override
-            public void preDestroy(X instance) {
-                it.preDestroy(instance);
-            }
-
-            @Override
-            public void dispose(X instance) {
-                it.dispose(instance);
-            }
-
-            @Override
-            public Set<InjectionPoint> getInjectionPoints() {
-                return it.getInjectionPoints();
-            }
-
-            @Override
-            public X produce(CreationalContext<X> ctx) {
-                return it.produce(ctx);
-            }
-        };
-
-
-        pit.setInjectionTarget(wrapped);
+    private boolean isNotEmpty(final String value) {
+        return value != null && value.trim().length() > 0;
     }
 
     private void submitToExecutor(final DelegationKafkaConsumer delegationKafkaConsumer) {
@@ -236,14 +234,35 @@ public class KafkaExtension<X> implements Extension {
         executorService.execute(delegationKafkaConsumer);
     }
 
-    private org.apache.kafka.clients.producer.Producer createInjectionProducer(final String bootstrapServers, final Class<?> keySerializerClass, final Class<?> valSerializerClass, final Serializer<?> keySerializer, final Serializer<?> valSerializer ) {
+    private InjectedKafkaProducer createInjectionProducer(final String namespace, final Properties properties, final Config config, final Class<?> keySerializerClass, final Class<?> valSerializerClass, final Serializer<?> keySerializer, final Serializer<?> valSerializer) {
 
-        final Properties properties = new Properties();
-        properties.put(BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
-        properties.put(KEY_SERIALIZER_CLASS_CONFIG, keySerializerClass);
-        properties.put(VALUE_SERIALIZER_CLASS_CONFIG, valSerializerClass);
 
-        return new InjectedKafkaProducer(properties, keySerializer, valSerializer);
+        final Map<String, Object> configurationProperties = replaceValues(namespace, properties, config);
+
+        configurationProperties.put(KEY_SERIALIZER_CLASS_CONFIG, keySerializerClass);
+        configurationProperties.put(VALUE_SERIALIZER_CLASS_CONFIG, valSerializerClass);
+
+        return new InjectedKafkaProducer(configurationProperties, keySerializer, valSerializer);
+    }
+
+    private Map<String, Object> replaceValues(final String namespace, final Properties properties, final Config config) {
+        return properties
+                    .entrySet()
+                    .stream()
+                    .collect(Collectors.toMap(
+                            e -> String.valueOf(e.getKey()),
+                            e -> config.getOptionalValue(resolveConfigKey(namespace, e.getKey().toString()), String.class).orElse(String.valueOf(e.getValue()))
+                    ));
+    }
+
+    private String resolveConfigKey(final String prefix, final String key) {
+        String resolvedKey = key;
+
+        if(isNotEmpty(prefix)) {
+            resolvedKey = String.format("%s#%s", prefix, key);
+        }
+
+        return resolvedKey;
     }
 
 

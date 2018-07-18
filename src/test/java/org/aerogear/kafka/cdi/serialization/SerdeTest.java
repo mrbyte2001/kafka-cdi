@@ -15,8 +15,6 @@
  */
 package org.aerogear.kafka.cdi.serialization;
 
-import com.google.common.base.Objects;
-
 import org.aerogear.kafka.serialization.CafdiSerdes;
 import org.aerogear.kafka.serialization.GenericSerializer;
 import org.aerogear.kafka.serialization.JsonObjectDeserializer;
@@ -33,6 +31,8 @@ import org.junit.Test;
 
 import javax.json.Json;
 import javax.json.JsonObject;
+
+import java.util.Objects;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
@@ -101,8 +101,8 @@ public class SerdeTest {
             if (getClass() != obj.getClass()) return false;
 
             final User other = (User) obj;
-            return Objects.equal(this.username, other.username)
-                    && Objects.equal(this.age, other.age);
+            return Objects.equals(this.username, other.username)
+                    && Objects.equals(this.age, other.age);
 
         }
 
