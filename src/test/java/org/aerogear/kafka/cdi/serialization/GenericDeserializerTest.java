@@ -15,7 +15,6 @@
  */
 package org.aerogear.kafka.cdi.serialization;
 
-import com.google.common.base.Objects;
 import org.aerogear.kafka.serialization.GenericDeserializer;
 import org.apache.kafka.common.serialization.Deserializer;
 import org.junit.Before;
@@ -23,6 +22,7 @@ import org.junit.Test;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Objects;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
@@ -98,8 +98,8 @@ public class GenericDeserializerTest {
             if (getClass() != obj.getClass()) return false;
 
             final User other = (User) obj;
-            return Objects.equal(this.username, other.username)
-                    && Objects.equal(this.age, other.age);
+            return Objects.equals(this.username, other.username)
+                    && Objects.equals(this.age, other.age);
 
         }
 

@@ -15,6 +15,7 @@
  */
 package org.aerogear.kafka.cdi.annotation;
 
+import javax.inject.Qualifier;
 import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Inherited;
@@ -25,10 +26,18 @@ import java.lang.annotation.Target;
 /**
  * Global configuration annotation. Only first occurrence will be used.
  */
+@Qualifier
 @Inherited
-@Target({ElementType.TYPE})
+@Target({ElementType.TYPE, ElementType.FIELD, ElementType.METHOD})
 @Retention(RetentionPolicy.RUNTIME)
 @Documented
 public @interface KafkaConfig {
-    String bootstrapServers();
+    /**
+     * Namespace for Configuration-Entry.
+     *
+     * e.g. producer -> producer#bootstrap.servers
+     *
+     * @return namespace
+     */
+    String value() default "";
 }

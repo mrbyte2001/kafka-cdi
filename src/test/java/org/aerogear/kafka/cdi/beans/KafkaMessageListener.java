@@ -26,6 +26,7 @@ import javax.annotation.PostConstruct;
 import javax.inject.Inject;
 
 import static org.aerogear.kafka.cdi.ReceiveMessageFromInjectedServiceTest.EXTENDED_PRODUCER_TOPIC_NAME;
+import static org.aerogear.kafka.cdi.ReceiveMessageFromInjectedServiceTest.OTHER_EXTENDED_PRODUCER_TOPIC_NAME;
 import static org.aerogear.kafka.cdi.ReceiveMessageFromInjectedServiceTest.SIMPLE_PRODUCER_TOPIC_NAME;
 
 public class KafkaMessageListener {
@@ -39,6 +40,10 @@ public class KafkaMessageListener {
     @ForTopic(EXTENDED_PRODUCER_TOPIC_NAME)
     private MessageReceiver extendedTopicReceiver;
 
+    @Inject
+    @ForTopic(OTHER_EXTENDED_PRODUCER_TOPIC_NAME)
+    private MessageReceiver otherExtendedTopicReceiver;
+
     private final Logger logger = LoggerFactory.getLogger(KafkaMessageListener.class);
 
     @PostConstruct
@@ -48,7 +53,7 @@ public class KafkaMessageListener {
 
     @Consumer(
             topics = "#{SIMPLE_TOPIC_NAME}",
-            groupId = "#{GROUP_ID}",
+            groupId = "projection-group",
             consumerRebalanceListener = MyConsumerRebalanceListener.class
     )
     public void onMessage(final String simplePayload) {
@@ -57,12 +62,21 @@ public class KafkaMessageListener {
     }
 
     @Consumer(
-            topics = "#{EXTENDED_TOPIC_NAME}",
+            topics = "ServiceInjectionTest_annotation#topics",
             groupId = "#{GROUP_ID}",
             consumerRebalanceListener = MyConsumerRebalanceListener.class
     )
-    public void onMessage(final String key, final String simplePayload, final Headers headers) {
-        logger.info("Got message: {}||{}||{} ",key, simplePayload, headers);
+    public void onMessage(final String simplePayload, final Headers headers) {
+        logger.info("Got message: {}||{} ", simplePayload, headers);
         extendedTopicReceiver.ack();
+    }
+
+    @Consumer(
+            topics = OTHER_EXTENDED_PRODUCER_TOPIC_NAME,
+            consumerRebalanceListener = MyConsumerRebalanceListener.class
+    )
+    public void onMessage(final Integer key, final String simplePayload, final Headers headers) {
+        logger.info("Got message: {}||{}||{} ",key, simplePayload, headers);
+        otherExtendedTopicReceiver.ack();
     }
 }

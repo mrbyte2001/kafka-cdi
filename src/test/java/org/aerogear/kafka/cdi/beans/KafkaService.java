@@ -23,20 +23,29 @@ import org.aerogear.kafka.cdi.annotation.Producer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.inject.Inject;
 import java.nio.charset.Charset;
 import java.util.HashMap;
 import java.util.Map;
 
-@KafkaConfig(bootstrapServers = "#{KAFKA_SERVICE_HOST}")
 public class KafkaService {
 
     Logger logger = LoggerFactory.getLogger(KafkaService.class);
 
+    @Inject
     @Producer
+    @KafkaConfig
     private SimpleKafkaProducer<Integer, String> producer;
 
+    @Inject
     @Producer
+    @KafkaConfig("producer_ext1")
     private ExtendedKafkaProducer<Integer, String> extendedKafkaProducer;
+
+    @Inject
+    @Producer
+    @KafkaConfig("producer_ext2")
+    private ExtendedKafkaProducer<Integer, String> extended2KafkaProducer;
 
     public SimpleKafkaProducer returnSimpleProducer() {
         return producer;
@@ -45,6 +54,8 @@ public class KafkaService {
     public ExtendedKafkaProducer returnExtendedProducer() {
         return extendedKafkaProducer;
     }
+
+    public ExtendedKafkaProducer returnExtendedProducer2() { return extended2KafkaProducer;}
 
     public void sendMessage() {
         logger.info("sending message to the topic....");
@@ -55,7 +66,14 @@ public class KafkaService {
         logger.info("sending message with header to the topic....");
         Map<String, byte[]> headers = new HashMap<>();
         headers.put("header.key", "header.value".getBytes(Charset.forName("UTF-8")));
-        extendedKafkaProducer.send(ReceiveMessageFromInjectedServiceTest.EXTENDED_PRODUCER_TOPIC_NAME, "This is only a second test", headers);
+        extendedKafkaProducer.send(ReceiveMessageFromInjectedServiceTest.EXTENDED_PRODUCER_TOPIC_NAME,"This is only a second test", headers);
     }
 
+    public void sendMessageWithHeaderAndKey() {
+        logger.info("sending message with header and key to the topic....");
+        Map<String, byte[]> headers = new HashMap<>();
+        headers.put("header.key", "header.value".getBytes(Charset.forName("UTF-8")));
+        extended2KafkaProducer.send(ReceiveMessageFromInjectedServiceTest.OTHER_EXTENDED_PRODUCER_TOPIC_NAME, 1, "This is only a third test", headers);
+
+    }
 }

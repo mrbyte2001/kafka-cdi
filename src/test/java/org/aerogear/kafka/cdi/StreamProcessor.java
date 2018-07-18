@@ -17,6 +17,7 @@ package org.aerogear.kafka.cdi;
 
 import org.aerogear.kafka.cdi.annotation.KafkaStream;
 import org.apache.kafka.streams.kstream.KStream;
+import org.apache.kafka.streams.kstream.Materialized;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -31,7 +32,7 @@ public class StreamProcessor {
 
         final KStream<String, Long> successCountsPerJob = source.filter((key, value) -> value.equals("Success"))
                 .groupByKey()
-                .count("successMessagesStore").toStream();
+                .count(Materialized.as("successMessagesStore")).toStream();
 
         return successCountsPerJob;
     }

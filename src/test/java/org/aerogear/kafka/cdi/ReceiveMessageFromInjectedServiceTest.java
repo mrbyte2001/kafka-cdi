@@ -15,10 +15,11 @@
  */
 package org.aerogear.kafka.cdi;
 
-import org.aerogear.kafka.cdi.beans.KafkaService;
 import org.aerogear.kafka.cdi.annotation.ForTopic;
+import org.aerogear.kafka.cdi.beans.KafkaService;
 import org.aerogear.kafka.cdi.beans.mock.MessageReceiver;
 import org.aerogear.kafka.cdi.beans.mock.MockProvider;
+import org.aerogear.kafka.cdi.configuration.CustomTestConfigProviderResolver;
 import org.aerogear.kafka.cdi.tests.AbstractTestBase;
 import org.aerogear.kafka.cdi.tests.KafkaClusterTestBase;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
@@ -28,7 +29,9 @@ import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.consumer.OffsetResetStrategy;
 import org.apache.kafka.common.header.Header;
 import org.apache.kafka.common.header.Headers;
+import org.apache.kafka.common.serialization.IntegerDeserializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
+import org.eclipse.microprofile.config.spi.ConfigProviderResolver;
 import org.jboss.arquillian.container.test.api.Deployment;
 import org.jboss.arquillian.junit.Arquillian;
 import org.jboss.shrinkwrap.api.spec.JavaArchive;
@@ -52,6 +55,7 @@ public class ReceiveMessageFromInjectedServiceTest extends KafkaClusterTestBase 
 
     public static final String SIMPLE_PRODUCER_TOPIC_NAME = "ServiceInjectionTest.SimpleProducer";
     public static final String EXTENDED_PRODUCER_TOPIC_NAME = "ServiceInjectionTest.ExtendedProducer";
+    public static final String OTHER_EXTENDED_PRODUCER_TOPIC_NAME = "ServiceInjectionTest.OtherExtendedProducer";
 
     private final Logger logger = LoggerFactory.getLogger(ReceiveMessageFromInjectedServiceTest.class);
 
@@ -60,7 +64,8 @@ public class ReceiveMessageFromInjectedServiceTest extends KafkaClusterTestBase 
 
         return AbstractTestBase.createFrameworkDeployment()
                 .addPackage(KafkaService.class.getPackage())
-                .addPackage(MockProvider.class.getPackage());
+                .addPackage(MockProvider.class.getPackage())
+                .addAsServiceProvider(ConfigProviderResolver.class, CustomTestConfigProviderResolver.class);
     }
 
     @Inject
@@ -68,8 +73,11 @@ public class ReceiveMessageFromInjectedServiceTest extends KafkaClusterTestBase 
 
     @BeforeClass
     public static void createTopic() {
-        kafkaCluster.createTopics(SIMPLE_PRODUCER_TOPIC_NAME);
-        kafkaCluster.createTopics(EXTENDED_PRODUCER_TOPIC_NAME);
+        try {
+            kafkaCluster.createTopics(SIMPLE_PRODUCER_TOPIC_NAME,EXTENDED_PRODUCER_TOPIC_NAME,OTHER_EXTENDED_PRODUCER_TOPIC_NAME);
+        } catch (Exception e) {
+            // Ignore.
+        }
     }
 
     @Test
@@ -110,7 +118,7 @@ public class ReceiveMessageFromInjectedServiceTest extends KafkaClusterTestBase 
         service.sendMessageWithHeader();
 
         Properties cconfig = kafkaCluster.useTo().getConsumerProperties(consumerId, consumerId, OffsetResetStrategy.EARLIEST);
-        cconfig.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
+        cconfig.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, IntegerDeserializer.class);
         cconfig.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
         consumer = new KafkaConsumer(cconfig);
 
@@ -120,10 +128,44 @@ public class ReceiveMessageFromInjectedServiceTest extends KafkaClusterTestBase 
 
         while(loop) {
 
-            final ConsumerRecords<String, String> records = consumer.poll(Long.MAX_VALUE);
-            for (final ConsumerRecord<String, String> record : records) {
+            final ConsumerRecords<Integer, String> records = consumer.poll(Long.MAX_VALUE);
+            for (final ConsumerRecord<Integer, String> record : records) {
                 logger.trace("In polling loop, we got {}", record.value());
                 assertThat(record.value(), equalTo("This is only a second test"));
+                final Headers headers = record.headers();
+                final Header header = headers.lastHeader("header.key");
+                assertThat(header.key(), equalTo("header.key"));
+                loop = false;
+            }
+        }
+
+        Mockito.verify(receiver, Mockito.times(1)).ack();
+    }
+
+    @Test
+    public void testSendAndReceiveWithHeaderAndKey(@ForTopic(OTHER_EXTENDED_PRODUCER_TOPIC_NAME) MessageReceiver receiver) throws Exception {
+        final String consumerId = OTHER_EXTENDED_PRODUCER_TOPIC_NAME;
+
+        Thread.sleep(1000);
+        service.sendMessageWithHeaderAndKey();
+
+        Properties cconfig = kafkaCluster.useTo().getConsumerProperties(consumerId, consumerId, OffsetResetStrategy.EARLIEST);
+        cconfig.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, IntegerDeserializer.class);
+        cconfig.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
+        consumer = new KafkaConsumer(cconfig);
+
+        consumer.subscribe(Arrays.asList(OTHER_EXTENDED_PRODUCER_TOPIC_NAME));
+
+        boolean loop = true;
+
+        while(loop) {
+
+            final ConsumerRecords<Integer, String> records = consumer.poll(Long.MAX_VALUE);
+            for (final ConsumerRecord<Integer, String> record : records) {
+                assertThat(record.key(), equalTo(1));
+
+                logger.trace("In polling loop, we got {}", record.value());
+                assertThat(record.value(), equalTo("This is only a third test"));
                 final Headers headers = record.headers();
                 final Header header = headers.lastHeader("header.key");
                 assertThat(header.key(), equalTo("header.key"));

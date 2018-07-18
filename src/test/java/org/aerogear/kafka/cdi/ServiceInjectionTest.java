@@ -15,11 +15,15 @@
  */
 package org.aerogear.kafka.cdi;
 
+import org.aerogear.kafka.SimpleKafkaProducer;
 import org.aerogear.kafka.cdi.beans.KafkaService;
 import org.aerogear.kafka.cdi.beans.mock.MockProvider;
+import org.aerogear.kafka.cdi.configuration.CustomTestConfigProviderResolver;
 import org.aerogear.kafka.cdi.tests.AbstractTestBase;
 import org.aerogear.kafka.cdi.tests.KafkaClusterTestBase;
+import org.apache.kafka.clients.producer.ProducerConfig;
 import org.assertj.core.api.Assertions;
+import org.eclipse.microprofile.config.spi.ConfigProviderResolver;
 import org.jboss.arquillian.container.test.api.Deployment;
 import org.jboss.arquillian.junit.Arquillian;
 import org.jboss.shrinkwrap.api.spec.JavaArchive;
@@ -27,9 +31,12 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import javax.inject.Inject;
+import java.lang.reflect.Field;
 
+import static org.hamcrest.CoreMatchers.equalTo;
 import static org.hamcrest.CoreMatchers.notNullValue;
 import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.collection.IsIterableContainingInAnyOrder.containsInAnyOrder;
 
 @RunWith(Arquillian.class)
 public class ServiceInjectionTest extends KafkaClusterTestBase {
@@ -39,19 +46,45 @@ public class ServiceInjectionTest extends KafkaClusterTestBase {
 
         return AbstractTestBase.createFrameworkDeployment()
                 .addPackage(KafkaService.class.getPackage())
-                .addPackage(MockProvider.class.getPackage());
+                .addPackage(MockProvider.class.getPackage())
+                .addAsServiceProvider(ConfigProviderResolver.class, CustomTestConfigProviderResolver.class);
     }
 
     @Inject
     private KafkaService service;
 
-    @Test
-    public void nonNullSimpleProducer() {
-        Assertions.assertThat(service.returnSimpleProducer()).isNotNull();
+    private ProducerConfig producerConfig(final SimpleKafkaProducer simpleKafkaProducer) throws NoSuchFieldException, IllegalAccessException {
+        final Field producerConfig = simpleKafkaProducer.getClass().getSuperclass().getDeclaredField("producerConfig");
+        producerConfig.setAccessible(true);
+        return (ProducerConfig)producerConfig.get(simpleKafkaProducer);
     }
 
     @Test
-    public void nonNullExtendedProducer() {
+    public void nonNullSimpleProducer() throws Exception {
+        final SimpleKafkaProducer simpleKafkaProducer = service.returnSimpleProducer();
+        Assertions.assertThat(simpleKafkaProducer).isNotNull();
+        final ProducerConfig config = producerConfig(simpleKafkaProducer);
+        assertThat(config.getList("bootstrap.servers"), containsInAnyOrder("localhost:9098"));
+        assertThat(config.getString("compression.type"), equalTo("snappy"));
+    }
+
+    @Test
+    public void nonNullExtendedProducer() throws Exception {
         assertThat(service.returnExtendedProducer(), notNullValue());
+        final ProducerConfig config = producerConfig(service.returnExtendedProducer());
+        assertThat(config.getList("bootstrap.servers"), containsInAnyOrder("localhost:9098"));
+        assertThat(config.getString("compression.type"), equalTo("lz4"));
+        assertThat(config.getString("acks"), equalTo("0"));
+        assertThat(config.getInt("retries"), equalTo(1));
+    }
+
+    @Test
+    public void nonNullExtended2Producer() throws Exception {
+        assertThat(service.returnExtendedProducer2(), notNullValue());
+        final ProducerConfig config = producerConfig(service.returnExtendedProducer2());
+        assertThat(config.getList("bootstrap.servers"), containsInAnyOrder("localhost:9098"));
+        assertThat(config.getString("compression.type"), equalTo("gzip"));
+        assertThat(config.getString("acks"), equalTo("0"));
+        assertThat(config.getInt("retries"), equalTo(2));
     }
 }

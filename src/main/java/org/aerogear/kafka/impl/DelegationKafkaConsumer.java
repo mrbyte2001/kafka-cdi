@@ -25,6 +25,10 @@ import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.common.errors.SerializationException;
 import org.apache.kafka.common.errors.WakeupException;
+import org.apache.kafka.common.header.Headers;
+import org.eclipse.microprofile.config.Config;
+import org.eclipse.microprofile.config.ConfigProvider;
+import org.eclipse.microprofile.config.spi.ConfigSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -33,6 +37,7 @@ import javax.enterprise.inject.spi.AnnotatedMethod;
 import javax.enterprise.inject.spi.Bean;
 import javax.enterprise.inject.spi.BeanManager;
 import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.lang.reflect.Type;
 import java.util.Arrays;
 import java.util.List;
@@ -40,10 +45,10 @@ import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
+import java.util.stream.StreamSupport;
 
-import static org.apache.kafka.clients.CommonClientConfigs.BOOTSTRAP_SERVERS_CONFIG;
-import static org.apache.kafka.clients.consumer.ConsumerConfig.GROUP_ID_CONFIG;
 import static org.apache.kafka.clients.consumer.ConsumerConfig.AUTO_OFFSET_RESET_CONFIG;
+import static org.apache.kafka.clients.consumer.ConsumerConfig.GROUP_ID_CONFIG;
 import static org.apache.kafka.clients.consumer.ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG;
 import static org.apache.kafka.clients.consumer.ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG;
 
@@ -55,7 +60,6 @@ public class DelegationKafkaConsumer implements Runnable {
      * True if a consumer is running; otherwise false
      */
     private final AtomicBoolean running = new AtomicBoolean(Boolean.TRUE);
-    private final Properties properties = new Properties();
 
     private Object consumerInstance;
     private KafkaConsumer<?, ?> consumer;
@@ -83,8 +87,10 @@ public class DelegationKafkaConsumer implements Runnable {
 
     private Class<?> consumerKeyType(final Class<?> defaultKeyType, final AnnotatedMethod annotatedMethod) {
 
-        if (annotatedMethod.getJavaMember().getParameterTypes().length == 2) {
-            return annotatedMethod.getJavaMember().getParameterTypes()[0];
+        final Class<?>[] parameterTypes = annotatedMethod.getJavaMember().getParameterTypes();
+
+        if ((parameterTypes.length == 2 && parameterTypes[1] != Headers.class) || parameterTypes.length == 3) {
+            return parameterTypes[0];
         } else {
             return defaultKeyType;
         }
@@ -92,10 +98,11 @@ public class DelegationKafkaConsumer implements Runnable {
 
     private Class<?> consumerValueType(final AnnotatedMethod annotatedMethod) {
 
-        if (annotatedMethod.getJavaMember().getParameterTypes().length == 2) {
-            return annotatedMethod.getJavaMember().getParameterTypes()[1];
+        final Class<?>[] parameterTypes = annotatedMethod.getJavaMember().getParameterTypes();
+        if (parameterTypes.length == 2 && parameterTypes[1] != Headers.class|| parameterTypes.length == 3) {
+            return parameterTypes[1];
         } else {
-            return annotatedMethod.getJavaMember().getParameterTypes()[0];
+            return parameterTypes[0];
         }
     }
 
@@ -104,14 +111,9 @@ public class DelegationKafkaConsumer implements Runnable {
     }
 
 
-    public void initialize(final String bootstrapServers, final AnnotatedMethod annotatedMethod, final BeanManager beanManager) {
+    public void initialize(final AnnotatedMethod annotatedMethod, final BeanManager beanManager) {
         final Consumer consumerAnnotation = annotatedMethod.getAnnotation(Consumer.class);
 
-        this.topics = Arrays.stream(consumerAnnotation.topics())
-                .map(VerySimpleEnvironmentResolver::simpleBootstrapServerResolver)
-                .collect(Collectors.toList());
-
-        final String groupId = VerySimpleEnvironmentResolver.simpleBootstrapServerResolver(consumerAnnotation.groupId());
         final Class<?> recordKeyType = consumerAnnotation.keyType();
 
         this.annotatedListenerMethod = annotatedMethod;
@@ -119,9 +121,27 @@ public class DelegationKafkaConsumer implements Runnable {
         final Class<?> keyTypeClass = consumerKeyType(recordKeyType, annotatedMethod);
         final Class<?> valTypeClass = consumerValueType(annotatedMethod);
 
-        properties.put(BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
-        properties.put(GROUP_ID_CONFIG, groupId);
-        properties.put(AUTO_OFFSET_RESET_CONFIG, consumerAnnotation.offset());
+        final Config config = ConfigProvider.getConfig();
+        final Properties properties = configurationProperties(config, consumerAnnotation);
+
+        final String[] topics = consumerAnnotation.topics();
+
+        if (topics.length == 1) {
+            this.topics = config.getOptionalValue(topics[0], String.class)
+                    .map(entry -> Arrays.asList(entry))
+                    .orElse(Arrays.stream(topics)
+                    .map(VerySimpleEnvironmentResolver::simpleBootstrapServerResolver)
+                    .collect(Collectors.toList()));
+
+        } else if(topics.length > 1) {
+            this.topics = Arrays.stream(topics)
+                    .map(VerySimpleEnvironmentResolver::simpleBootstrapServerResolver)
+                    .collect(Collectors.toList());
+        }
+
+
+        properties.put(GROUP_ID_CONFIG, consumerAnnotation.groupId().isEmpty() ? config.getValue(GROUP_ID_CONFIG, String.class) : VerySimpleEnvironmentResolver.simpleBootstrapServerResolver(consumerAnnotation.groupId()));
+        properties.put(AUTO_OFFSET_RESET_CONFIG, consumerAnnotation.offset().isEmpty() ? config.getOptionalValue(AUTO_OFFSET_RESET_CONFIG, String.class) : consumerAnnotation.offset());
         properties.put(KEY_DESERIALIZER_CLASS_CONFIG,  CafdiSerdes.serdeFrom(keyTypeClass).deserializer().getClass());
         properties.put(VALUE_DESERIALIZER_CLASS_CONFIG,CafdiSerdes.serdeFrom(valTypeClass).deserializer().getClass());
 
@@ -131,10 +151,37 @@ public class DelegationKafkaConsumer implements Runnable {
         final Set<Bean<?>> beans = beanManager.getBeans(annotatedListenerMethod.getJavaMember().getDeclaringClass());
         final Bean<?> propertyResolverBean = beanManager.resolve(beans);
         final CreationalContext<?> creationalContext = beanManager.createCreationalContext(propertyResolverBean);
-        final Type consumerTpye = annotatedListenerMethod.getJavaMember().getDeclaringClass();
+        final Type consumerType = annotatedListenerMethod.getJavaMember().getDeclaringClass();
 
-        consumerInstance = beanManager.getReference(propertyResolverBean, consumerTpye, creationalContext);
+        consumerInstance = beanManager.getReference(propertyResolverBean, consumerType, creationalContext);
     }
+
+    private Properties configurationProperties(final Config config, final Consumer consumerAnnotation) {
+        final String configurationName = consumerAnnotation.groupId();
+
+        Properties properties = new Properties();
+
+        StreamSupport.stream(config.getConfigSources().spliterator(), false)
+                .filter(configSource -> configSource.getName().equals("DEFAULT"))
+                .findFirst()
+                .map(ConfigSource::getProperties)
+                .ifPresent(properties::putAll);
+
+        if (isNotEmpty(configurationName)) {
+            StreamSupport.stream(config.getConfigSources().spliterator(), false)
+                    .filter(configSource -> configSource.getName().equals(VerySimpleEnvironmentResolver.simpleBootstrapServerResolver(consumerAnnotation.groupId())))
+                    .findFirst()
+                    .map(ConfigSource::getProperties)
+                    .ifPresent(properties::putAll);
+        }
+
+        return properties;
+    }
+
+    private boolean isNotEmpty(final String value) {
+        return value != null && value.trim().length() > 0;
+    }
+
 
     @Override
     public void run() {
@@ -147,13 +194,20 @@ public class DelegationKafkaConsumer implements Runnable {
                     try {
                         logger.trace("dispatching payload {} to consumer", record.value());
 
-                        if (annotatedListenerMethod.getJavaMember().getParameterTypes().length == 3) {
-                            annotatedListenerMethod.getJavaMember().invoke(consumerInstance, record.key(), record.value(), record.headers());
-                        }else if (annotatedListenerMethod.getJavaMember().getParameterTypes().length == 2) {
-                            annotatedListenerMethod.getJavaMember().invoke(consumerInstance, record.key(), record.value());
+                        final Method javaMember = annotatedListenerMethod.getJavaMember();
+                        final Class<?>[] parameterTypes = javaMember.getParameterTypes();
+
+                        if (parameterTypes.length == 3) {
+                            javaMember.invoke(consumerInstance, record.key(), record.value(), record.headers());
+                        } else if (parameterTypes.length == 2) {
+                            if (parameterTypes[1] != Headers.class) {
+                                javaMember.invoke(consumerInstance, record.key(), record.value());
+                            } else {
+                                javaMember.invoke(consumerInstance, record.value(), record.headers());
+                            }
 
                         } else {
-                            annotatedListenerMethod.getJavaMember().invoke(consumerInstance, record.value());
+                            javaMember.invoke(consumerInstance, record.value());
                         }
 
                         logger.trace("dispatched payload {} to consumer", record.value());
