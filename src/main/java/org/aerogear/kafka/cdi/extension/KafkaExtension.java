@@ -41,7 +41,8 @@ import java.lang.reflect.Field;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
 import java.util.ArrayList;
-import java.util.Collections;
+import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
@@ -100,7 +101,7 @@ public class KafkaExtension<X> implements Extension {
         }
     }
 
-    public void simple(@Observes ProcessInjectionPoint<X,SimpleKafkaProducer> pat, BeanManager beanManager) {
+    public void simple(@Observes ProcessInjectionPoint<X,SimpleKafkaProducer> pat) {
         final InjectionPoint injectionPoint = pat.getInjectionPoint();
         Config config = ConfigProvider.getConfig();
         final KafkaConfig kafkaConfig = injectionPoint.getAnnotated().getAnnotation(KafkaConfig.class);
@@ -117,10 +118,10 @@ public class KafkaExtension<X> implements Extension {
                 keySerde.serializer(),
                 valSerde.serializer());
 
-        final Set<Type> beanTypes = Collections.singleton(injectionPoint.getType());
+        final Set<Type> beanTypes = new HashSet<>(Arrays.asList(injectionPoint.getType(), Object.class));
 
         final KafkaBean<SimpleKafkaProducer> kafkaBean = new KafkaBean<>(
-                injectionProducer.getClass(),
+                SimpleKafkaProducer.class,
                 beanTypes,
                 pat.getInjectionPoint().getQualifiers(), injectionProducer);
 
@@ -149,7 +150,7 @@ public class KafkaExtension<X> implements Extension {
         return properties;
     }
 
-    public void extended(@Observes ProcessInjectionPoint<X,ExtendedKafkaProducer> pat, BeanManager beanManager) {
+    public void extended(@Observes ProcessInjectionPoint<X,ExtendedKafkaProducer> pat) {
         final InjectionPoint injectionPoint = pat.getInjectionPoint();
         Config config = ConfigProvider.getConfig();
         final KafkaConfig kafkaConfig = injectionPoint.getAnnotated().getAnnotation(KafkaConfig.class);
@@ -159,15 +160,17 @@ public class KafkaExtension<X> implements Extension {
 
         Properties properties = configurationProperties(config, kafkaConfig);
 
-        final InjectedKafkaProducer injectionProducer = createInjectionProducer(kafkaConfig.value(), properties, config, keySerde.serializer().getClass(),
+        final String namespace = kafkaConfig != null ? kafkaConfig.value() : "";
+
+        final InjectedKafkaProducer injectionProducer = createInjectionProducer(namespace, properties, config, keySerde.serializer().getClass(),
                 valSerde.serializer().getClass(),
                 keySerde.serializer(),
                 valSerde.serializer());
 
-        final Set<Type> beanTypes = Collections.singleton(injectionPoint.getType());
+        final Set<Type> beanTypes = new HashSet<>(Arrays.asList(injectionPoint.getType(), Object.class));
 
         final KafkaBean<ExtendedKafkaProducer> kafkaBean = new KafkaBean<>(
-                injectionProducer.getClass(),
+                ExtendedKafkaProducer.class,
                 beanTypes,
                 pat.getInjectionPoint().getQualifiers(), injectionProducer);
 

@@ -34,7 +34,6 @@ public class KafkaService {
 
     @Inject
     @Producer
-    @KafkaConfig
     private SimpleKafkaProducer<Integer, String> producer;
 
     @Inject
